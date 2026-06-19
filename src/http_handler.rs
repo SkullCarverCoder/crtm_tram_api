@@ -128,8 +128,8 @@ async fn process_request(
     data: &DataRequest
 ) -> Result<logic::Entities::ResultCalculation, DataRequestError> {
     if
-        !COMPATIBLE_STOPS.contains_key(&data.stopname) ||
-        !COMPATIBLE_STOPS.contains_key(&data.stopname)
+        !COMPATIBLE_STOPS.contains_key(&data.stopname.to_uppercase()) ||
+        !COMPATIBLE_STOPS.contains_key(&data.stopname.to_uppercase())
     {
         return Err(DataRequestError {
             error: "Stop name couldn't be found".to_string(),
@@ -142,7 +142,7 @@ async fn process_request(
         }
         let result = logic
             ::get_configured_stop_data(
-                COMPATIBLE_STOPS.get(&data.stopname),
+                COMPATIBLE_STOPS.get(&data.stopname.to_uppercase()),
                 &data.geolocation
             ).await
             .unwrap();

@@ -1,8 +1,9 @@
-use reqwest::{ Error };
 use std::collections::HashMap;
 use chrono::prelude::*;
 use geo::{ Point };
 use std::string::ParseError;
+use std::fmt;
+use std::error::Error;
 
 pub mod Entities {
     use serde::{ Serialize, Deserialize };
@@ -96,7 +97,7 @@ pub mod Entities {
     }
 
     #[derive(Serialize)]
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Clone)]
     pub struct ResultStop {
         #[serde(alias = "codStop")]
         code: String,
@@ -108,7 +109,7 @@ pub mod Entities {
         night_line_service: i32,
     }
     #[derive(Serialize)]
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Clone)]
     pub struct Line {
         #[serde(alias = "codLine")]
         pub code_line: String,
@@ -129,7 +130,7 @@ pub mod Entities {
     }
 
     #[derive(Serialize)]
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Clone)]
     pub struct LineResult {
         line: Line,
         pub direction: i32,
@@ -144,9 +145,9 @@ pub mod Entities {
     }
 
     #[derive(Serialize)]
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Clone)]
     pub struct TimeResult {
-        #[serde(alias = "Time")]
+        #[serde(default, alias = "Time")]
         pub time: Vec<LineResult>,
     }
 
@@ -156,7 +157,7 @@ pub mod Entities {
         #[serde(alias = "actualDate")]
         pub actual_date: String,
         stop: ResultStop,
-        pub times: TimeResult,
+        pub times: Option<TimeResult>,
     }
 
     #[derive(Serialize)]
@@ -172,68 +173,110 @@ pub fn get_result_direction_from_itineraries(
     response: &Entities::CRTMResult,
     result_times: &mut Vec<Entities::ResultDirection>
 ) -> Result<(), ParseError> {
-    let mut earliest_time_in_direction: Option<DateTime<FixedOffset>> = None;
-    let mut next_train_time_in_direction: Vec<DateTime<FixedOffset>> = Vec::new();
-    let mut destiny: Option<String> = None;
     for itinerary in &stop_instance.itineraries {
-        for time_direction in &response.stop_times.times.time {
+        let times_result = match &response.stop_times.times {
+            None => continue,
+            Some(t) => t,
+        };
+
+        if times_result.time.is_empty() {
+            continue;
+        }
+
+        let mut earliest_time_in_direction: Option<DateTime<FixedOffset>> = None;
+        let mut next_train_time_in_direction: Vec<DateTime<FixedOffset>> = Vec::new();
+        let mut destiny: Option<String> = None;
+
+        for time_direction in &times_result.time {
             if itinerary.direction_int == time_direction.direction {
                 destiny = Some(time_direction.destination.clone());
-                let time_direction_parse_result = time_direction.time
+                let time_direction_datetime = match time_direction.time
                     .clone()
-                    .parse::<DateTime<FixedOffset>>();
-                let time_direction_datetime = match time_direction_parse_result {
+                    .parse::<DateTime<FixedOffset>>()
+                {
                     Ok(line_result) => line_result,
-                    Err(_) => todo!(),
+                    Err(_) => continue,
                 };
-                if earliest_time_in_direction.is_none() {
-                    earliest_time_in_direction = Some(time_direction_datetime.clone());
-                } else {
-                    if
-                        time_direction_datetime.timestamp() <
-                        earliest_time_in_direction.unwrap().timestamp()
-                    {
-                        earliest_time_in_direction = Some(time_direction_datetime.clone());
+                if let Some(earliest) = earliest_time_in_direction.as_ref() {
+                    if time_direction_datetime.timestamp() < earliest.timestamp() {
+                        earliest_time_in_direction = Some(time_direction_datetime);
                     } else {
                         next_train_time_in_direction.push(time_direction_datetime);
                     }
+                } else {
+                    earliest_time_in_direction = Some(time_direction_datetime);
                 }
             }
         }
+
+        let current = match earliest_time_in_direction {
+            Some(t) => t.to_rfc2822(),
+            None => continue,
+        };
+
         result_times.push(Entities::ResultDirection {
             direction: itinerary.direction.clone(),
-            next_tram_time: Some(next_train_time_in_direction[0].to_rfc2822()),
-            current_tram_time: Some(earliest_time_in_direction.unwrap().to_rfc2822()),
-            last_stop: destiny.clone().unwrap(),
+            next_tram_time: next_train_time_in_direction.first().map(|t| t.to_rfc2822()),
+            current_tram_time: Some(current),
+            last_stop: destiny.unwrap_or_default(),
         });
     }
     Ok(())
 }
 
+#[derive(Debug)]
+struct NoTimesInAPIError;
+
+impl fmt::Display for NoTimesInAPIError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "No times data returned for any itinerary")
+    }
+}
+
+impl Error for NoTimesInAPIError {}
+
 pub async fn get_configured_stop_data(
     stop_instance: Option<&Entities::Stop>,
     current_geo: &Entities::Geolocation
-) -> Result<Entities::ResultCalculation, Error> {
+) -> Result<Entities::ResultCalculation, Box<dyn std::error::Error>> {
     let p1 = Point::new(current_geo.longitude.unwrap(), current_geo.latitude.unwrap());
     let stop = stop_instance.unwrap();
 
     let distance = stop.distance_from_point(p1);
 
-    let resp: Entities::CRTMResult = reqwest
-        ::get(
-            format!(
-                "https://www.crtm.es/widgets/api/GetStopsTimes.php?codStop={}&type={}&orderBy={}&stopTimesByIti={}",
-                stop.code,
-                "0",
-                "2",
-                stop.itineraries[0].code
-            )
-        ).await?
-        .json().await?;
+    let mut resp: Option<Entities::CRTMResult> = None;
+    for itinerary in &stop.itineraries {
+        let attempt: Entities::CRTMResult = reqwest
+            ::get(
+                format!(
+                    "https://www.crtm.es/widgets/api/GetStopsTimes.php?codStop={}&type={}&orderBy={}&stopTimesByIti={}",
+                    stop.code,
+                    "0",
+                    "2",
+                    itinerary.code
+                )
+            ).await?
+            .json().await?;
+
+        let has_times = match &attempt.stop_times.times {
+            Some(t) => !t.time.is_empty(),
+            None => false,
+        };
+
+        if has_times {
+            resp = Some(attempt);
+            break;
+        }
+    }
+
+    let resp = match resp {
+        Some(r) => r,
+        None => return Err(Box::new(NoTimesInAPIError)),
+    };
 
     let mut result_times: Vec<Entities::ResultDirection> = Vec::new();
 
-    get_result_direction_from_itineraries(&stop_instance.unwrap(), &resp, &mut result_times);
+    get_result_direction_from_itineraries(stop, &resp, &mut result_times);
 
     let timestamp = match resp.stop_times.actual_date.clone()
                     .parse::<DateTime<FixedOffset>>(){
@@ -246,18 +289,6 @@ pub async fn get_configured_stop_data(
         times: result_times.clone(),
         timestamp: timestamp, //timestamp of result
     };
-    
-
-    println!(
-        "{}",
-        format!(
-            "TEST Direction: {}  current_tram_time: {}  next_tram_time: {} distance_to_stop: {}",
-            &result.times[0].direction,
-            &result.times[0].current_tram_time.clone().unwrap(),
-            &result.times[0].next_tram_time.clone().unwrap(),
-            &distance
-        )
-    );
 
     return Ok(result);
 }
