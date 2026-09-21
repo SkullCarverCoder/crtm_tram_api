@@ -178,13 +178,7 @@ pub fn get_result_direction_from_itineraries(
             continue;
         }
 
-        let mut earliest_time_in_direction: Option<DateTime<FixedOffset>> = Some(
-            response
-                .stop_times
-                .actual_date
-                .parse::<DateTime<FixedOffset>>()
-                .unwrap(),
-        );
+        let mut earliest_time_in_direction: Option<DateTime<FixedOffset>> = None;
         let mut next_train_time_in_direction: Vec<DateTime<FixedOffset>> = Vec::new();
         let mut destiny: Option<String> = None;
 
