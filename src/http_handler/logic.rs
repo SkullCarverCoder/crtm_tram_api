@@ -1,15 +1,14 @@
-use std::collections::HashMap;
 use chrono::prelude::*;
-use geo::{ Point };
-use std::string::ParseError;
-use std::fmt;
+use geo::Point;
 use std::error::Error;
+use std::fmt;
+use std::string::ParseError;
 
 pub mod Entities {
-    use serde::{ Serialize, Deserialize };
-    use geo::{ Distance, Haversine, Point };
-    use std::fmt;
+    use geo::{Distance, Haversine, Point};
+    use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
+    use std::fmt;
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
     pub struct Geolocation {
@@ -17,8 +16,7 @@ pub mod Entities {
         pub longitude: Option<f64>,
     }
 
-    #[derive(Serialize)]
-    #[derive(Clone)]
+    #[derive(Serialize, Clone)]
     pub enum Direction {
         EastWest,
         WestEast,
@@ -27,12 +25,16 @@ pub mod Entities {
     }
     impl fmt::Display for Direction {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "{}", match self {
-                Self::EastWest => "Westbound",
-                Self::WestEast => "Eastbound",
-                Self::SouthNorth => "Northbound",
-                Self::NorthSouth => "Southbound",
-            })
+            write!(
+                f,
+                "{}",
+                match self {
+                    Self::EastWest => "Westbound",
+                    Self::WestEast => "Eastbound",
+                    Self::SouthNorth => "Northbound",
+                    Self::NorthSouth => "Southbound",
+                }
+            )
         }
     }
     pub struct Itinerary {
@@ -57,7 +59,7 @@ pub mod Entities {
             postal_code: i32,
             line_code: &str,
             itineraries: [Itinerary; 2],
-            coordinates: Geolocation
+            coordinates: Geolocation,
         ) -> Stop {
             Stop {
                 code: code.to_string(),
@@ -73,15 +75,14 @@ pub mod Entities {
             // We first get distance between stop and geolocation
             let p2 = Point::new(
                 self.coordinates.longitude.expect("longitude must be set"),
-                self.coordinates.latitude.expect("latitude must be set")
+                self.coordinates.latitude.expect("latitude must be set"),
             );
 
             return Haversine.distance(another_point, p2);
         }
     }
 
-    #[derive(Serialize)]
-    #[derive(Clone)]
+    #[derive(Serialize, Clone)]
     pub struct ResultDirection {
         pub direction: Direction,
         pub next_tram_time: Option<String>,
@@ -96,8 +97,7 @@ pub mod Entities {
         pub timestamp: String, //timestamp of result
     }
 
-    #[derive(Serialize)]
-    #[derive(Deserialize, Clone)]
+    #[derive(Serialize, Deserialize, Clone)]
     pub struct ResultStop {
         #[serde(alias = "codStop")]
         code: String,
@@ -108,8 +108,7 @@ pub mod Entities {
         #[serde(alias = "nightLinesService")]
         night_line_service: i32,
     }
-    #[derive(Serialize)]
-    #[derive(Deserialize, Clone)]
+    #[derive(Serialize, Deserialize, Clone)]
     pub struct Line {
         #[serde(alias = "codLine")]
         pub code_line: String,
@@ -129,8 +128,7 @@ pub mod Entities {
         company_code: String,
     }
 
-    #[derive(Serialize)]
-    #[derive(Deserialize, Clone)]
+    #[derive(Serialize, Deserialize, Clone)]
     pub struct LineResult {
         line: Line,
         pub direction: i32,
@@ -144,15 +142,13 @@ pub mod Entities {
         code_issue: String,
     }
 
-    #[derive(Serialize)]
-    #[derive(Deserialize, Clone)]
+    #[derive(Serialize, Deserialize, Clone)]
     pub struct TimeResult {
         #[serde(default, alias = "Time")]
         pub time: Vec<LineResult>,
     }
 
-    #[derive(Serialize)]
-    #[derive(Deserialize)]
+    #[derive(Serialize, Deserialize)]
     pub struct StopTime {
         #[serde(alias = "actualDate")]
         pub actual_date: String,
@@ -160,8 +156,7 @@ pub mod Entities {
         pub times: Option<TimeResult>,
     }
 
-    #[derive(Serialize)]
-    #[derive(Deserialize)]
+    #[derive(Serialize, Deserialize)]
     pub struct CRTMResult {
         #[serde(alias = "stopTimes")]
         pub stop_times: StopTime,
@@ -171,7 +166,7 @@ pub mod Entities {
 pub fn get_result_direction_from_itineraries(
     stop_instance: &Entities::Stop,
     response: &Entities::CRTMResult,
-    result_times: &mut Vec<Entities::ResultDirection>
+    result_times: &mut Vec<Entities::ResultDirection>,
 ) -> Result<(), ParseError> {
     for itinerary in &stop_instance.itineraries {
         let times_result = match &response.stop_times.times {
@@ -183,20 +178,24 @@ pub fn get_result_direction_from_itineraries(
             continue;
         }
 
-        let mut earliest_time_in_direction: Option<DateTime<FixedOffset>> = None;
+        let mut earliest_time_in_direction: Option<DateTime<FixedOffset>> = Some(
+            response
+                .stop_times
+                .actual_date
+                .parse::<DateTime<FixedOffset>>()
+                .unwrap(),
+        );
         let mut next_train_time_in_direction: Vec<DateTime<FixedOffset>> = Vec::new();
         let mut destiny: Option<String> = None;
 
         for time_direction in &times_result.time {
             if itinerary.direction_int == time_direction.direction {
                 destiny = Some(time_direction.destination.clone());
-                let time_direction_datetime = match time_direction.time
-                    .clone()
-                    .parse::<DateTime<FixedOffset>>()
-                {
-                    Ok(line_result) => line_result,
-                    Err(_) => continue,
-                };
+                let time_direction_datetime =
+                    match time_direction.time.clone().parse::<DateTime<FixedOffset>>() {
+                        Ok(line_result) => line_result,
+                        Err(_) => continue,
+                    };
                 if let Some(earliest) = earliest_time_in_direction.as_ref() {
                     if time_direction_datetime.timestamp() < earliest.timestamp() {
                         earliest_time_in_direction = Some(time_direction_datetime);
@@ -237,9 +236,12 @@ impl Error for NoTimesInAPIError {}
 
 pub async fn get_configured_stop_data(
     stop_instance: Option<&Entities::Stop>,
-    current_geo: &Entities::Geolocation
+    current_geo: &Entities::Geolocation,
 ) -> Result<Entities::ResultCalculation, Box<dyn std::error::Error>> {
-    let p1 = Point::new(current_geo.longitude.unwrap(), current_geo.latitude.unwrap());
+    let p1 = Point::new(
+        current_geo.longitude.unwrap(),
+        current_geo.latitude.unwrap(),
+    );
     let stop = stop_instance.unwrap();
 
     let distance = stop.distance_from_point(p1);
@@ -278,8 +280,12 @@ pub async fn get_configured_stop_data(
 
     get_result_direction_from_itineraries(stop, &resp, &mut result_times);
 
-    let timestamp = match resp.stop_times.actual_date.clone()
-                    .parse::<DateTime<FixedOffset>>(){
+    let timestamp = match resp
+        .stop_times
+        .actual_date
+        .clone()
+        .parse::<DateTime<FixedOffset>>()
+    {
         Ok(parse_result) => parse_result.to_rfc2822(),
         Err(_) => todo!(),
     };
